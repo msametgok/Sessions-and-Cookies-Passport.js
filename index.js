@@ -75,27 +75,27 @@ app.post("/login", passport.authenticate('local', {
 }));
 
 // Passport Local Strategy
-passport.use(new LocalStrategy(async (username, password, done) => {
+passport.use(new LocalStrategy(async (username, password, cb) => {
   try {
     const user = await getUserByEmail(username);
-    if (!user) return done(null, false, { message: 'User not found' });
+    if (!user) return cb(null, false, { message: 'User not found' });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (isMatch) return done(null, user);
-    return done(null, false, { message: 'Incorrect password' });
+    if (isMatch) return cb(null, user);
+    return cb(null, false, { message: 'Incorrect password' });
   } catch (err) {
-    return done(err);
+    return cb(err);
   }
 }));
 
 // Passport serialization
-passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser(async (id, done) => {
+passport.serializeUser((user, cb) => cb(null, user.id));
+passport.deserializeUser(async (id, cb) => {
   try {
     const user = await getUserById(id);
-    done(null, user);
+   cb(null, user);
   } catch (err) {
-    done(err);
+   cb(err);
   }
 });
 
