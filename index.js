@@ -2,28 +2,20 @@ import express from "express";
 import bodyParser from "body-parser";
 import pg from "pg";
 import bcrypt from "bcrypt";
-import session from "express-session";
-import passport from "passport";
-import { Strategy as LocalStrategy } from "passport-local";
+import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser";
 
 dotenv.config();
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const saltRounds = 10;
 
 // Middleware
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
-app.use(session({
-  secret: process.env.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: true,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 }
-}));
-app.use(passport.initialize());
-app.use(passport.session());
+app.use(cookieParser());  // Add cookie-parser middleware
 
 // Database connection
 const db = new pg.Client({
@@ -31,21 +23,34 @@ const db = new pg.Client({
   host: process.env.DB_HOST,
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
-  port: 5432,
+  port: process.env.DB_PORT,
 });
 db.connect();
+
+// JWT Middleware to protect routes
+function authenticateJWT(req, res, next) {
+  const token = req.cookies.token; // Get the token from cookies
+
+  if (token) {
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.sendStatus(403); // Forbidden
+      }
+      req.user = user;
+      next();
+    });
+  } else {
+    res.sendStatus(401); // Unauthorized
+  }
+}
 
 // Routes
 app.get("/", (req, res) => res.render("home.ejs"));
 app.get("/login", (req, res) => res.render("login.ejs"));
 app.get("/register", (req, res) => res.render("register.ejs"));
 
-app.get('/secrets', (req, res) => {
-  if (req.isAuthenticated()) {
-    res.render('secrets.ejs');
-  } else {
-    res.redirect('/login');
-  }
+app.get('/secrets', authenticateJWT, (req, res) => {
+  res.render('secrets.ejs');
 });
 
 app.post("/register", async (req, res) => {
@@ -58,10 +63,13 @@ app.post("/register", async (req, res) => {
     } else {
       const hashedPassword = await bcrypt.hash(password, saltRounds);
       const newUser = await createUser(email, hashedPassword);
-      req.login(newUser, err => {
-        if (err) console.error(err);
-        res.redirect('/secrets');
-      });
+
+      // Automatically log in the user by generating a JWT
+      const token = generateJWT(newUser);
+
+      // Store the token in a cookie and redirect to secrets
+      res.cookie('token', token, { httpOnly: true });
+      res.redirect('/secrets');
     }
   } catch (err) {
     console.error(err);
@@ -69,37 +77,40 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.post("/login", passport.authenticate('local', {
-  successRedirect: '/secrets',
-  failureRedirect: '/login'
-}));
+app.post("/login", async (req, res) => {
+  const { username: email, password } = req.body;
 
-// Passport Local Strategy
-passport.use(new LocalStrategy(async (username, password, cb) => {
   try {
-    const user = await getUserByEmail(username);
-    if (!user) return cb(null, false, { message: 'User not found' });
+    const user = await getUserByEmail(email);
+    if (!user) {
+      return res.status(400).json({ message: "User not found" });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (isMatch) return cb(null, user);
-    return cb(null, false, { message: 'Incorrect password' });
-  } catch (err) {
-    return cb(err);
-  }
-}));
+    if (!isMatch) {
+      return res.status(400).json({ message: "Incorrect password" });
+    }
 
-// Passport serialization
-passport.serializeUser((user, cb) => cb(null, user.id));
-passport.deserializeUser(async (id, cb) => {
-  try {
-    const user = await getUserById(id);
-   cb(null, user);
+    // Generate a JWT token for the user
+    const token = generateJWT(user);
+
+    // Store the token in a cookie and redirect to secrets
+    res.cookie('token', token, { httpOnly: true });
+    res.redirect('/secrets');
   } catch (err) {
-   cb(err);
+    console.error(err);
+    res.status(500).send("Server error");
   }
 });
 
-// Helper functions
+// Helper function to generate a JWT
+function generateJWT(user) {
+  return jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, {
+    expiresIn: '1h'
+  });
+}
+
+// Helper functions for database queries
 async function checkUserExists(email) {
   const result = await db.query("SELECT * FROM users WHERE email = $1", [email]);
   return result.rows.length > 0;
